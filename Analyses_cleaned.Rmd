@@ -1,0 +1,564 @@
+
+# Initialization: load packages
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Add your packages in the following list:"rstatix","MASS"
+list.of.packages = c("dplyr", "ggplot2","gplots","plyr", "tidyverse", "polycor", "psych" ,"data.table",  "ggpubr","lattice","pracma","nnls","smacof","Rtsne","readr","openxlsx","stringr","tm","philentropy","RColorBrewer","ggforce","R.matlab","cluster","readODS","parameters","see","factoextra","ggrepel","NbClust","Hmisc","corrplot", "Rmisc", "gapminder", "MetBrewer","irr","GGally","umap","jsonlite", "shiny", "vegan", "purrr", "boot", "lme4", "lmerTest")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages) > 0) {install.packages(new.packages)}
+lapply(list.of.packages, require, character.only=T)
+```
+
+# Experiment 1: Identifying the distribution of faces sampled from Gibbs
+
+```{r}
+# Load the full dataset containing all the faces in each chain
+Experiment1 <- read.csv("CogSci_Experiment1.csv")
+```
+
+
+```{r}
+# Select the subset that has been optimized full rounds
+# This selected subset included: (1) 1 face representing the initial starting point of each chain, (2) 8 faces from the first iteration round, (3) 4 faces from the second iteration round, and (4) 2 faces from each of the subsequent eight cycles of iterations. This selection process ensured that our final stimulus set captured both the early-stage and progressively refined representations of each condition. A total of 138 faces were dropped due to missing values in the stored data. Finally, We compiled a set of 1028 faces in total.
+
+keep_iterations <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80)
+SubsetDat <- na.omit(Experiment1[Experiment1$Iteration %in% keep_iterations, ])
+set.seed(1234)
+Face.tsne_out1 <- Rtsne(
+  SubsetDat[, 4:11],
+  dims = 2,
+  pca = TRUE,
+  max_iter = 1000,
+  theta = 0.4,
+  perplexity = 20,
+  verbose = FALSE,
+  check_duplicates = FALSE
+)
+
+# Organize t-SNE output
+Face.tsne_result <- data.frame(
+  tSNE1 = Face.tsne_out1$Y[,1],
+  tSNE2 = Face.tsne_out1$Y[,2],
+  Chain = SubsetDat$Network,
+  Target = SubsetDat$Target,
+  Iteration = SubsetDat$Iteration
+)
+
+# Show key points on the figure
+plot_iterations = c(8, 16, 24, 32, 40, 48, 56, 64, 72, 80)
+Face.tsne_result.toPlot <- Face.tsne_result[Face.tsne_result$Iteration %in% plot_iterations, ]
+
+# Figure 1B
+ggplot(Face.tsne_result.toPlot, aes(x = tSNE1, y = tSNE2)) +
+  # Scatter plot of points, coloring by target condition
+  geom_point(aes(color = Target), size = 3) +
+  
+  # Add labels and themes
+  labs(
+    title = "t-SNE Plot Colored by Target Condition",
+    x = "t-SNE1",
+    y = "t-SNE2",
+    color = "Target Condition"
+  ) +
+  # Connect points within the same chain and target, ordered by degree
+  geom_path(aes(group = interaction(Chain, Target), color = Target), linetype = "dashed") +
+  theme_minimal() +
+  theme(
+    legend.position = "top"
+  )
+
+# PERMANOVA
+#[REPORTED] Using the Subset
+permanova_result <- adonis2(SubsetDat[, which(names(Experiment1) == "f"):which(names(Experiment1) == "b")] ~ Target, 
+                            data = SubsetDat, 
+                            method = "euclidean", 
+                            permutations = 999)
+
+# Display the PERMANOVA results
+print(permanova_result)
+
+#[Supplementary1] Pairwise Comparison
+# target_pairs <- combn(unique(Experiment1$Target), 2, simplify = FALSE)
+# pairwise_results <- lapply(target_pairs, function(pair) {
+#   data_subset <- SubsetDat[SubsetDat$Target %in% pair, ]
+#   adonis2(data_subset[, which(names(data_subset) == "f"):which(names(data_subset) == "b")] ~ Target, 
+#                             data = data_subset, 
+#                             method = "euclidean", 
+#                             permutations = 999)
+# })
+# names(pairwise_results) <- sapply(target_pairs, paste, collapse = " vs ")
+# pairwise_results
+
+#[Supplementary2] Using the Full Dataset
+# permanova_result <- adonis2(Experiment1[, which(names(Experiment1) == "f"):which(names(Experiment1) == "b")] ~ Target, 
+#                             data = Experiment1, 
+#                             method = "euclidean", 
+#                             permutations = 999)
+# print(permanova_result)
+```
+
+
+```{r}
+# Figure 1C
+rating_data <- read.csv("CogSci_Experiment1_Rating.csv", header = TRUE)
+rating_data <- rating_data %>%
+  mutate(Chain = gsub("Chain", "", Chain))  # Removes the "Chain" string
+
+colnames(rating_data)[colnames(rating_data) == "Condition"] <- "Target"
+colnames(rating_data)[colnames(rating_data) == "Chain"] <- "Chain"
+colnames(rating_data)[colnames(rating_data) == "Node"] <- "Iteration"
+
+# Perform a left join to map the ratings to the tsne results
+# Convert 'degree' to character in both data frames
+rating_data$Chain <- as.character(rating_data$Chain)
+Face.tsne_result$Chain <- as.character(Face.tsne_result$Chain)
+rating_data$Iteration <- as.character(rating_data$Iteration)
+Face.tsne_result$Iteration <- as.character(Face.tsne_result$Iteration)
+merged_data <- left_join(rating_data, Face.tsne_result, by = c("Target", "Chain", "Iteration"))
+
+ggplot(merged_data, aes(x = tSNE1, y = tSNE2)) +
+  # Scatter plot of points, coloring by Mean_Rating_Happy
+  geom_point(aes(color = Mean_Rating_Happy), size = 3) +
+  
+  # Add a heatmap-like color scale (blue for low values, red for high values)
+  scale_color_gradient(low = "blue", high = "red", na.value = "gray") +
+  
+  # Add labels and themes
+  labs(
+    title = "t-SNE Plot with Mean Rating of Happy Faces and Chain Connections",
+    x = "t-SNE1",
+    y = "t-SNE2",
+    color = "Mean Rating (Happy)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top"
+  ) 
+```
+
+```{r}
+ResNetDat <- fread("CogSci_Experiment1_ResNet.csv")
+ResNetDat.toPlot <- ResNetDat[ResNetDat$Iteration %in% plot_iterations, ]
+# Figure 2
+ggplot(ResNetDat.toPlot, aes(x = tSNE1, y = tSNE2)) +
+  geom_point(aes(color = Target), size = 3) +
+  labs(
+    title = "t-SNE Plot Colored by Target Condition",
+    x = "t-SNE1",
+    y = "t-SNE2",
+    color = "Target Condition"
+  ) +
+  geom_path(aes(group = interaction(Network, Target), color = Target), linetype = "dashed") +
+  theme_minimal() +
+  theme(
+    legend.position = "top"
+  )
+# PERMANOVA
+#[REPORTED]
+permanova_result <- adonis2(ResNetDat[, c("tSNE1", "tSNE2")] ~ Target, 
+                            data = ResNetDat, 
+                            method = "euclidean", 
+                            permutations = 999)
+print(permanova_result)
+
+#[Supplementary1] Pairwise Comparison
+# target_pairs <- combn(unique(Experiment1$Target), 2, simplify = FALSE)
+# pairwise_results <- lapply(target_pairs, function(pair) {
+#   data_subset <- ResNetDat[ResNetDat$Target %in% pair, ]
+#   adonis2(data_subset[, c("tSNE1", "tSNE2")] ~ Target,
+#                             data = data_subset,
+#                             method = "euclidean",
+#                             permutations = 999)
+# })
+# names(pairwise_results) <- sapply(target_pairs, paste, collapse = " vs ")
+# pairwise_results
+
+```
+
+```{r}
+Experiment2 <- read.csv("CogSci_Experiment2.csv", header = TRUE)
+
+# Preprocess
+# (1) if a participant rated a face as the least fitting (< -.90) or most fitting (> .90) across all six emotion labels, their ratings for that face were excluded from further analysis
+
+threshold <- 0.90
+filtered_data <- Experiment2 %>%
+  filter(!(abs(Happy) >= threshold & abs(Sad) >= threshold & abs(Surprised) >= threshold &
+           abs(Fear) >= threshold & abs(Angry) >= threshold & abs(Disgust) >= threshold))
+
+# (2) to control for participants' varying use of the slider, each participant's ratings on each basic emotion were z-transformed (standardized)
+scaled_data <- filtered_data %>%
+  group_by(ID) %>%  # Group by subject (or trial_index)
+  mutate(across(Happy:Disgust, ~scale(.)))  # Scale ratings for each emotion
+
+# (3) for each emotion dimension, ratings that deviated beyond 1.5 times the interquartile range (IQR) from the quartiles of all ratings were identified as extreme outliers and excluded
+remove_outliers_per_group <- function(data, cols) {
+  data %>%
+    group_by(Condition, Chain, Node) %>%
+    group_modify(~ {
+      .x %>%
+        mutate(across(
+          all_of(cols),
+          ~ {
+            q1 <- quantile(., 0.25, na.rm = TRUE)
+            q3 <- quantile(., 0.75, na.rm = TRUE)
+            iqr <- q3 - q1
+            if_else(. < (q1 - 1.5 * iqr) | . > (q3 + 1.5 * iqr), NA_real_, .)
+          },
+          .names = "{.col}_filtered"
+        )) %>%
+        drop_na(starts_with("filtered")) %>%  # Drop rows where any filtered column is NA
+        select(-ends_with("_filtered"))      # Optionally, keep only the original columns
+    }) %>%
+    ungroup()
+}
+rating_columns <- c("Happy", "Sad", "Surprised", "Fear", "Angry", "Disgust")
+cleaned_data <- remove_outliers_per_group(scaled_data, rating_columns)
+long_data <- cleaned_data %>% 
+  pivot_longer(
+    cols = c(Happy, Sad, Surprised, Fear, Angry, Disgust),
+    names_to = "Emotion",
+    values_to = "Rating"
+  )
+```
+
+
+```{r}
+# Define IQR bootstrap function
+calculate_iqr <- function(data, indices) {
+  resampled_data <- data[indices]
+  return(IQR(resampled_data, na.rm = TRUE))
+}
+bootstrap_iqr <- function(ratings, n_resamples = 100) {
+  boot_result <- boot(ratings, statistic = calculate_iqr, R = n_resamples)
+  mean(boot_result$t)  # Return the mean of bootstrapped IQRs
+}
+
+# Define SD bootstrap function
+bootstrap_sd <- function(ratings, n_resamples = 100, seed = NULL) {
+  boot_stat <- function(data, indices) {
+    sd(data[indices], na.rm = TRUE)
+  }
+  boot_result <- boot(data = ratings, statistic = boot_stat, R = n_resamples)
+  # Return results
+  return(mean(boot_result$t, na.rm = TRUE))
+}
+
+# Compute parameters:
+# (1) Mean Ratings
+# (2) Bootstrapped SD & IQR
+set.seed(12345)
+long_data <- data.frame(long_data)
+summary_data <- long_data %>%
+  dplyr::group_by(Condition, Node, Emotion, Chain) %>%
+  dplyr::summarise(
+    Mean_Rating = mean(Rating, na.rm = TRUE),
+    SD = bootstrap_sd(Rating),
+    IQR = bootstrap_iqr(Rating),
+    .groups = "drop"
+  )
+
+summary_data$Node <- as.numeric(gsub("Node", "", summary_data$Node))
+summary_stats <- summary_data %>%
+  dplyr::group_by(Condition, Node, Emotion) %>%
+  dplyr::summarise(
+    mean_of_means = mean(Mean_Rating, na.rm = TRUE),  # Mean of the mean ratings
+    sd_of_means = sd(Mean_Rating, na.rm = TRUE),  # SD of the mean ratings
+    mean_of_sds = mean(SD, na.rm = TRUE),  # Mean of the SD values
+    sd_of_sds = sd(SD, na.rm = TRUE),  # SD of the SD values
+    mean_of_iqr = mean(IQR, na.rm = TRUE),
+    sd_of_iqr = sd(IQR, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+happy_color <- "#FA4C4B"
+sad_color <- "#5A70FF" 
+
+summary_long1 <- summary_data %>%
+  filter(Emotion %in% c("Happy", "Sad")) %>%
+  pivot_longer(cols = c(Mean_Rating), names_to = "Metric", values_to = "Value")%>%
+  mutate(Condition = recode(Condition, 
+                            "Ambiguity" = "Ambiguously Happy",
+                            "ConsensusHappy" = "Consensually Happy",
+                            "ConsensusSad" = "Consensually Sad"))
+
+summary_long2 <- summary_data %>%
+  filter(Emotion %in% c("Happy", "Sad")) %>%
+  pivot_longer(cols = c(SD, IQR), names_to = "Metric", values_to = "Value") %>%
+  mutate(Metric = factor(Metric, levels = c("SD", "IQR")))%>%  # Reorder the row
+  mutate(Condition = recode(Condition, 
+                            "Ambiguity" = "Ambiguously Happy",
+                            "ConsensusHappy" = "Consensually Happy",
+                            "ConsensusSad" = "Consensually Sad"))
+
+figure2a <- ggplot(summary_long1, aes(x = Node, y = Value, color = Emotion, group = interaction(Chain, Emotion))) +
+  
+  # Individual chain progression lines (fainter)
+  geom_line(alpha = 0.3, size = 0.2) +
+  
+  # Mean progression across chains (bold)
+  geom_smooth(aes(group = Emotion), se = FALSE, method = "loess", span = 1, linewidth = 1.5) +
+  
+  # Custom colors
+  scale_color_manual(values = c("Happy" = happy_color, "Sad" = sad_color),
+                     guide = guide_legend(override.aes = list(alpha = 1))) +
+  
+  # Facet by Metric (rows) and Condition (columns) in the specified order
+  facet_grid(Metric ~ Condition, scales = "free_y", switch = "y") +
+  facet_grid(rows = vars(Condition), cols = vars(Metric))+
+  
+  # Labels and theme
+  labs(
+    title = "Progression of Mean Rating",
+    x = "Iteration Steps",
+    y = "Value",
+    color = "Emotion"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  )
+
+figure2c <- ggplot(summary_long2, aes(x = Node, y = Value, color = Emotion, group = interaction(Chain, Emotion))) +
+  
+  # Individual chain progression lines (fainter)
+  geom_line(alpha = 0.3, size = 0.2) +
+  
+  # Mean progression across chains (bold)
+  geom_smooth(aes(group = Emotion), se = FALSE, method = "loess", span = 1, linewidth = 1.5) +
+  
+  # Custom colors
+  scale_color_manual(values = c("Happy" = happy_color, "Sad" = sad_color),
+                     guide = guide_legend(override.aes = list(alpha = 1))) +
+  
+  # Facet by Metric (rows) and Condition (columns) in the specified order
+  facet_grid(Metric ~ Condition, scales = "free_y", switch = "y") +
+  facet_grid(rows = vars(Condition), cols = vars(Metric))+
+  # Labels and theme
+  labs(
+    title = "Progression of SD, and IQR",
+    x = "Iteration Steps",
+    y = "Value",
+    color = "Emotion"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  )
+figure2a
+figure2c
+#ggsave("figure2a.pdf", plot = figure2a, width = 4, height = 12, device = pdf)
+#ggsave("figure2c.pdf", plot = figure2c, width = 8, height = 12, device = pdf)
+```
+
+```{r}
+run_node_group_model <- function(data, emotion, condition_filter) {
+  data %>%
+    filter(Emotion == emotion, Condition == condition_filter) %>%
+    mutate(Node_Group = factor(ifelse(Node <= 8, "Low", "High"), levels = c("Low", "High"))
+    )%>%
+    lm(Mean_Rating ~ Node_Group, data = .) %>%
+    summary()
+}
+print(ConsensusHappy_Happy <- run_node_group_model(summary_data, "Happy", "ConsensusHappy"))
+print(ConsensusHappy_Sad <- run_node_group_model(summary_data, "Sad", "ConsensusHappy"))
+print(ConsensusSad_Happy <- run_node_group_model(summary_data, "Happy", "ConsensusSad"))
+print(ConsensusSad_Sad <- run_node_group_model(summary_data, "Sad", "ConsensusSad"))
+
+```
+
+```{r}
+HighNodeData <- summary_data %>%
+  filter(Emotion %in% c("Happy", "Sad"))
+
+HighNodeData  %>%
+  group_by(Condition, Emotion) %>%
+  dplyr::summarise(
+    mean_rating = mean(Mean_Rating, na.rm = TRUE),
+    sd_rating = sd(Mean_Rating, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+happy_rating_betweengroup <- aov(Mean_Rating ~ Condition, data = HighNodeData %>% filter(Emotion == "Happy"))
+summary(happy_rating_betweengroup)
+tukey_results <- TukeyHSD(happy_rating_betweengroup)
+print(tukey_results)
+
+sad_rating_betweengroup <- aov(Mean_Rating ~ Condition, data = HighNodeData %>% filter(Emotion == "Sad"))
+summary(sad_rating_betweengroup)
+tukey_results <- TukeyHSD(sad_rating_betweengroup)
+print(tukey_results)
+```
+```{r}
+cleaned_data <- cleaned_data %>%
+  mutate(across(Happy:Disgust, as.numeric))  
+
+calculate_distance_summary <- function(data) {
+  ratings <- data %>%
+    select(Happy, Sad, Surprised, Fear, Angry, Disgust) %>%
+    mutate(
+      Positive = rowMeans(select(., Happy, Surprised), na.rm = TRUE),
+      Negative = rowMeans(select(., Sad, Fear, Angry, Disgust), na.rm = TRUE)
+    ) %>%
+    select(Positive, Negative)
+  
+  if (nrow(ratings) < 2) return(NA)  # Avoid errors with single-row groups
+  
+  mean_dist <- mean(as.vector(dist(ratings)), na.rm = TRUE)
+  return(mean_dist)
+}
+
+bootstrap_distance_fast <- function(data, n_resamples = 5) {
+  resampled_means <- replicate(n_resamples, {
+    sampled_data <- data[sample(nrow(data), replace = TRUE), ]
+    calculate_distance_summary(sampled_data)
+  })
+  return(mean(resampled_means, na.rm = TRUE))
+}
+
+distance_stats <- cleaned_data %>%
+  group_by(Condition, Chain, Node) %>%
+  dplyr::filter(dplyr::n() >= 5) %>%
+  dplyr::summarise(mean_distance = bootstrap_distance_fast(cur_data()), .groups = "drop")
+
+distance_data <- distance_stats %>%
+  group_by(Condition, Node) %>%
+  dplyr::summarise(
+    mean_distance1 = mean(mean_distance, na.rm = TRUE),
+    sd_distance = sd(mean_distance, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+distance_stats$Node <- as.numeric(gsub("Node", "", distance_stats$Node))
+distance_data$Node <- as.numeric(gsub("Node", "", distance_data$Node))
+distance_stats$Condition <- factor(distance_stats$Condition)
+distance_stats <- distance_stats%>%
+  mutate(Condition = recode(Condition, 
+                            "Ambiguity" = "Ambiguously Happy",
+                            "ConsensusHappy" = "Consensually Happy",
+                            "ConsensusSad" = "Consensually Sad"))
+
+# Figure 2B
+ggplot(distance_stats, aes(x = Node, y = mean_distance, color = Condition, group = interaction(Chain, Condition))) +
+  
+  # Individual chain progression lines (fainter)
+  geom_line(alpha = 0.3, size = 0.2) +
+  
+  # Mean progression across chains (bold)
+  geom_smooth(aes(group = Condition), se = FALSE, method = "loess", span = 1, linewidth = 1) +
+  
+  # Custom colors
+  #scale_color_manual(values = c("Ambiguity" = happy_color, "Sad" = sad_color),
+                     #guide = guide_legend(override.aes = list(alpha = 1))) +
+  
+  # Facet by Metric (rows) and Condition (columns) in the specified order
+  facet_grid(rows = vars(Condition), scales = "fixed", switch = "y") +
+  
+  # Labels and theme
+  labs(
+    title = "Progression of distance Across Nodes",
+    x = "Iteration Steps",
+    y = "Euclidean Distance on Valence Interpretation",
+    color = "Emotion"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text.y = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  )
+```
+```{r}
+filtered_distance_data <- distance_stats %>%
+  filter(Node > 8)
+
+# Perform ANOVA to compare mean_distance across conditions
+anova_result <- aov(mean_distance ~ Condition, data = filtered_distance_data)
+
+# Summarize ANOVA results
+summary(anova_result)
+
+# Post-hoc test (Tukey HSD) for pairwise comparisons
+tukey_result <- TukeyHSD(anova_result)
+
+# Print Tukey results to check pairwise comparisons
+print(tukey_result)
+
+# Optionally, view the mean distances by condition for reporting
+mean_distances_by_condition <- filtered_distance_data %>%
+  group_by(Condition) %>%
+  dplyr::summarise(mean_distance1 = mean(mean_distance, na.rm = TRUE),
+            sd_distance = sd(mean_distance, na.rm = TRUE))
+
+print(mean_distances_by_condition)
+# Filter the data: Only nodes >= 8 and the three conditions of interest
+filtered_data <- distance_data %>%
+  filter(Node >= 8)
+
+lmm_model <- aov(mean_distance1 ~ Condition, data = filtered_data)
+summary(lmm_model)
+pairwise.t.test(filtered_data$mean_distance1, filtered_data$Condition, p.adjust.method = "bonferroni")
+
+```
+
+```{r}
+HighNodeData  %>%
+  group_by(Condition, Emotion) %>%
+  dplyr::summarise(
+    mean_SD = mean(SD, na.rm = TRUE),
+    sd_SD = sd(SD, na.rm = TRUE),
+    mean_IQR = mean(IQR, na.rm = TRUE),
+    sd_IQR = sd(IQR, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+happy_SD_betweengroup <- aov(SD ~ Condition, data = HighNodeData %>% filter(Emotion == "Happy"))
+summary(happy_SD_betweengroup)
+tukey_results <- TukeyHSD(happy_SD_betweengroup)
+print(tukey_results)
+
+sad_SD_betweengroup <- aov(SD ~ Condition, data = HighNodeData %>% filter(Emotion == "Sad"))
+summary(sad_SD_betweengroup)
+tukey_results <- TukeyHSD(sad_SD_betweengroup)
+print(tukey_results)
+
+happy_IQR_betweengroup <- aov(IQR ~ Condition, data = HighNodeData %>% filter(Emotion == "Happy"))
+summary(happy_IQR_betweengroup)
+tukey_results <- TukeyHSD(happy_IQR_betweengroup)
+print(tukey_results)
+
+sad_IQR_betweengroup <- aov(IQR ~ Condition, data = HighNodeData %>% filter(Emotion == "Sad"))
+summary(sad_IQR_betweengroup)
+tukey_results <- TukeyHSD(sad_IQR_betweengroup)
+print(tukey_results)
+```
+
+```{r}
+lm_sd <- lm(SD ~ Mean_Rating * Emotion * Condition, data = summary_data%>%
+  filter(Emotion %in% c("Happy", "Sad")))
+summary(lm_sd)
+anova(lm_sd)
+```
+
+```{r}
+# Filter data for ambiguous faces and both emotions
+ambiguous_faces <- summary_data %>% 
+  filter(Emotion %in% c("Happy", "Sad") & Condition == "Ambiguity")
+
+# GAM for SD
+lm_sd <- lm(SD ~ Node * Emotion, data = ambiguous_faces)
+summary(lm_sd)
+
+# GAM for IQR
+lm_iqr <- lm(IQR ~ Node * Emotion, data = ambiguous_faces)
+summary(lm_iqr)
+
+```
+
+
